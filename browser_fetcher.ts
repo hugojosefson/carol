@@ -1,4 +1,7 @@
 /**
+ * Adopted from https://github.com/puppeteer/puppeteer/blob/f2e19276acb80e596ff5c781c9ae2bc2f2a8f363/src/node/BrowserFetcher.ts
+ * which is licensed as follows:
+ *
  * Copyright 2017 Google Inc. All rights reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");

@@ -25,9 +25,32 @@
  * SOFTWARE.
  */
 
-import { exists } from "./deps.ts";
+import { exists, join } from "./deps.ts";
+import { BrowserFetcher, Platform } from "./browser_fetcher.ts";
 
 type OS = "darwin" | "linux" | "windows";
+
+function getDownloadDir(os: OS, env: typeof Deno.env): string {
+  if (os === "darwin") {
+    const home = env.get("HOME");
+    if (home) return join(home, "Library", "Caches", "carol");
+  }
+
+  if (os === "windows") {
+    const localAppData = env.get("LocalAppData");
+    if (localAppData) return join(localAppData, "carol");
+  }
+
+  if (os === "linux") {
+    const xdgCacheHome = env.get("XDG_CACHE_HOME");
+    if (xdgCacheHome) return join(xdgCacheHome, "carol");
+
+    const home = env.get("HOME");
+    if (home) return join(home, ".cache", "carol");
+  }
+
+  throw new Error(`Could not find a suitable directory to download into.`);
+}
 
 export async function locateChrome(
   os: OS = Deno.build.os,
@@ -73,5 +96,15 @@ export async function locateChrome(
     }
   }
 
-  return "";
+  const downloadDir: string = getDownloadDir(os, env);
+  const browserFetcher = new BrowserFetcher(
+    downloadDir,
+    {
+      product: "chrome",
+      platform: os as Platform,
+    },
+  );
+  const revision = await browserFetcher.latestRevision();
+  const revisionInfo = await browserFetcher.download(revision);
+  return revisionInfo.executablePath;
 }

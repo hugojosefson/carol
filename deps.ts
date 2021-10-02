@@ -5,18 +5,24 @@ export {
   join,
   resolve,
 } from "https://deno.land/std@0.108.0/path/mod.ts";
-export { BufReader } from "https://deno.land/std@0.108.0/io/bufio.ts";
+
 export { concat } from "https://deno.land/std@0.108.0/bytes/mod.ts";
+
 // TODO: Remove this import statement.
 export { decode, encode } from "https://deno.land/std@0.84.0/encoding/utf8.ts";
 export {
   decode as decodeFromBase64,
   encode as encodeToBase64,
 } from "https://deno.land/std@0.108.0/encoding/base64.ts";
-export { deferred } from "https://deno.land/std@0.108.0/async/deferred.ts";
-export type { Deferred } from "https://deno.land/std@0.108.0/async/deferred.ts";
 
-export { readAll, writeAll } from "https://deno.land/std@0.108.0/io/util.ts";
+export { deferred } from "https://deno.land/std@0.108.0/async/mod.ts";
+export type { Deferred } from "https://deno.land/std@0.108.0/async/mod.ts";
+
+export {
+  BufReader,
+  readAll,
+  writeAll,
+} from "https://deno.land/std@0.108.0/io/mod.ts";
 
 export {
   assert,

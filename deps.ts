@@ -1,5 +1,8 @@
+export { ensureDir } from "https://deno.land/std@0.109.0/fs/ensure_dir.ts";
+export { ensureFile } from "https://deno.land/std@0.109.0/fs/ensure_file.ts";
 export { exists } from "https://deno.land/std@0.109.0/fs/exists.ts";
 export {
+  basename,
   dirname,
   fromFileUrl,
   join,
@@ -20,9 +23,13 @@ export type { Deferred } from "https://deno.land/std@0.109.0/async/mod.ts";
 
 export {
   BufReader,
+  copy,
   readAll,
+  readerFromStreamReader,
   writeAll,
 } from "https://deno.land/std@0.109.0/io/mod.ts";
+
+export { sprintf } from "https://deno.land/std@0.109.0/fmt/printf.ts";
 
 export {
   assert,
@@ -33,6 +40,8 @@ export {
   fail,
 } from "https://deno.land/std@0.109.0/testing/asserts.ts";
 
+export { default as aiReduce } from "https://cdn.skypack.dev/ai-reduce@2.1.0";
+
 export { default as puppeteer } from "https://unpkg.com/puppeteer@10.4.0/lib/esm/puppeteer/web.js";
 export { EventEmitter } from "https://unpkg.com/puppeteer@10.4.0/lib/esm/puppeteer/common/EventEmitter.js";
 export { BrowserWebSocketTransport } from "https://unpkg.com/puppeteer@10.4.0/lib/esm/puppeteer/common/BrowserWebSocketTransport.js";
@@ -41,3 +50,4 @@ export type { Browser } from "https://unpkg.com/puppeteer@10.4.0/lib/esm/puppete
 export type { Target } from "https://unpkg.com/puppeteer@10.4.0/lib/esm/puppeteer/common/Target.js";
 export type { CDPSession } from "https://unpkg.com/puppeteer@10.4.0/lib/esm/puppeteer/common/Connection.js";
 export type { Page } from "https://unpkg.com/puppeteer@10.4.0/lib/esm/puppeteer/common/Page.js";
+export type { Product } from "https://unpkg.com/puppeteer@10.4.0/lib/esm/puppeteer/common/Product.d.ts";

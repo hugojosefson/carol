@@ -17,30 +17,34 @@
  * limitations under the License.
  */
 
-import * as os from "os";
-import * as fs from "fs";
-import * as path from "path";
-import * as util from "util";
-import * as childProcess from "child_process";
-import * as https from "https";
-import * as http from "http";
+import {
+  aiReduce,
+  assert,
+  basename,
+  copy,
+  decode,
+  ensureDir,
+  exists,
+  join,
+  Product,
+  readerFromStreamReader,
+  sprintf,
+} from "./deps.ts";
 
-import { Product } from "../common/Product.js";
-import extractZip from "extract-zip";
-import { debug } from "../common/Debug.js";
-import { promisify } from "util";
-import removeRecursive from "rimraf";
-import * as URL from "url";
-import createHttpsProxyAgent, {
-  HttpsProxyAgent,
-  HttpsProxyAgentOptions,
-} from "https-proxy-agent";
-import { getProxyForUrl } from "proxy-from-env";
-import { assert } from "../common/assert.js";
+function debugFetcher(...args: unknown[]) {
+  console.debug("browser_fetcher:", ...args);
+}
 
-const debugFetcher = debug("puppeteer:fetcher");
+const os: "linux" | "darwin" | "windows" | string = Deno.build.os;
+const arch: "aarch64" | "arm64" | "x64" | "x86_64" = Deno.build.arch;
 
-const downloadURLs = {
+/**
+ * Supported platforms.
+ * @public
+ */
+export type Platform = "linux" | "mac" | "win32" | "win64";
+
+const downloadURLs: Record<Product, Record<Platform, string>> = {
   chrome: {
     linux: "%s/chromium-browser-snapshots/Linux_x64/%d/%s.zip",
     mac: "%s/chromium-browser-snapshots/Mac/%d/%s.zip",
@@ -55,7 +59,7 @@ const downloadURLs = {
   },
 } as const;
 
-const browserConfig = {
+const browserConfig: Record<Product, { host: string; destination: string }> = {
   chrome: {
     host: "https://storage.googleapis.com",
     destination: ".local-chromium",
@@ -66,12 +70,6 @@ const browserConfig = {
     destination: ".local-firefox",
   },
 } as const;
-
-/**
- * Supported platforms.
- * @public
- */
-export type Platform = "linux" | "mac" | "win32" | "win64";
 
 function archiveName(
   product: Product,
@@ -88,6 +86,7 @@ function archiveName(
   } else if (product === "firefox") {
     return platform;
   }
+  throw new Error("unexpectedly could not figure out the archiveName.");
 }
 
 /**
@@ -99,44 +98,56 @@ function downloadURL(
   host: string,
   revision: string,
 ): string {
-  const url = util.format(
+  return sprintf(
     downloadURLs[product][platform],
     host,
     revision,
     archiveName(product, platform, revision),
   );
-  return url;
 }
 
 /**
  * @internal
  */
-function handleArm64(): void {
-  fs.stat("/usr/bin/chromium-browser", function (err, stats) {
-    if (stats === undefined) {
-      fs.stat("/usr/bin/chromium", function (err, stats) {
-        if (stats === undefined) {
-          console.error(
-            "The chromium binary is not available for arm64." +
-              "\nIf you are on Ubuntu, you can install with: " +
-              "\n\n sudo apt install chromium\n" +
-              "\n\n sudo apt install chromium-browser\n",
-          );
-          throw new Error();
-        }
-      });
-    }
-  });
+function firefoxName(
+  platform: Platform,
+): RegExp {
+  const suffix: string = sprintf(
+    downloadURLs.firefox[platform],
+    "",
+    "|",
+    platform,
+  ).replace(/^\/firefox-.*en-US/, "en-US");
+  return new RegExp("^firefox-(.*)\." + suffix.replace(".", "\\.") + "$");
 }
-const readdirAsync = promisify(fs.readdir.bind(fs));
-const mkdirAsync = promisify(fs.mkdir.bind(fs));
-const unlinkAsync = promisify(fs.unlink.bind(fs));
-const chmodAsync = promisify(fs.chmod.bind(fs));
 
-function existsAsync(filePath: string): Promise<boolean> {
-  return new Promise((resolve) => {
-    fs.access(filePath, (err) => resolve(!err));
-  });
+/**
+ * @internal
+ */
+async function handleArm64(): Promise<BrowserFetcherRevisionInfo | never> {
+  if (await exists("/usr/bin/chromium-browser")) {
+    return {
+      local: true,
+      product: "chromium",
+      executablePath: "/usr/bin/chromium-browser",
+    };
+  }
+
+  if (await exists("/usr/bin/chromium")) {
+    return {
+      local: true,
+      product: "chromium",
+      executablePath: "/usr/bin/chromium",
+    };
+  }
+
+  console.error(
+    "The chromium binary is not available for arm64." +
+      "\nIf you are on Ubuntu, you can install with: " +
+      "\n\n sudo apt install chromium\n" +
+      "\n\n sudo apt install chromium-browser\n",
+  );
+  throw new Error();
 }
 
 /**
@@ -153,13 +164,14 @@ export interface BrowserFetcherOptions {
  * @public
  */
 export interface BrowserFetcherRevisionInfo {
-  folderPath: string;
   executablePath: string;
-  url: string;
   local: boolean;
-  revision: string;
   product: string;
+  folderPath?: string;
+  url?: string;
+  revision?: string;
 }
+
 /**
  * BrowserFetcher can download and manage different versions of Chromium and Firefox.
  *
@@ -185,10 +197,10 @@ export interface BrowserFetcherRevisionInfo {
  */
 
 export class BrowserFetcher {
-  private _product: Product;
-  private _downloadsFolder: string;
-  private _downloadHost: string;
-  private _platform: Platform;
+  private readonly _product: Product;
+  private readonly _downloadsFolder: string;
+  private readonly _downloadHost: string;
+  private _platform!: Platform;
 
   /**
    * @internal
@@ -201,9 +213,11 @@ export class BrowserFetcher {
     );
 
     this._downloadsFolder = options.path ||
-      path.join(projectRoot, browserConfig[this._product].destination);
+      join(projectRoot, browserConfig[this._product].destination);
     this._downloadHost = options.host || browserConfig[this._product].host;
+
     this.setPlatform(options.platform);
+    assert(this._platform);
     assert(
       downloadURLs[this._product][this._platform],
       "Unsupported platform: " + this._platform,
@@ -216,12 +230,18 @@ export class BrowserFetcher {
       return;
     }
 
-    const platform = os.platform();
-    if (platform === "darwin") this._platform = "mac";
-    else if (platform === "linux") this._platform = "linux";
-    else if (platform === "win32") {
-      this._platform = os.arch() === "x64" ? "win64" : "win32";
-    } else assert(this._platform, "Unsupported platform: " + platform);
+    switch (os) {
+      case "darwin":
+        this._platform = "mac";
+        break;
+      case "linux":
+        this._platform = "linux";
+        break;
+      case "win32":
+        this._platform = arch === "x64" ? "win64" : "win32";
+        break;
+    }
+    assert(this._platform, "Unsupported platform: " + os);
   }
 
   /**
@@ -255,22 +275,19 @@ export class BrowserFetcher {
    * @returns A promise that resolves to `true` if the revision could be downloaded
    * from the host.
    */
-  canDownload(revision: string): Promise<boolean> {
-    const url = downloadURL(
+  async canDownload(revision: string): Promise<boolean> {
+    const url: string = downloadURL(
       this._product,
       this._platform,
       this._downloadHost,
       revision,
     );
-    return new Promise((resolve) => {
-      const request = httpRequest(url, "HEAD", (response) => {
-        resolve(response.statusCode === 200);
-      });
-      request.on("error", (error) => {
-        console.error(error);
-        resolve(false);
-      });
-    });
+    try {
+      return (await fetch(url, { method: "HEAD" })).ok;
+    } catch (error) {
+      console.error(error);
+      return false;
+    }
   }
 
   /**
@@ -285,36 +302,47 @@ export class BrowserFetcher {
    */
   async download(
     revision: string,
-    progressCallback: (x: number, y: number) => void = (): void => {},
+    progressCallback: (downloadedBytes: number, totalBytes: number) => void =
+      noop,
   ): Promise<BrowserFetcherRevisionInfo> {
-    const url = downloadURL(
+    const url: string = downloadURL(
       this._product,
       this._platform,
       this._downloadHost,
       revision,
     );
-    const fileName = url.split("/").pop();
-    const archivePath = path.join(this._downloadsFolder, fileName);
-    const outputPath = this._getFolderPath(revision);
-    if (await existsAsync(outputPath)) return this.revisionInfo(revision);
-    if (!(await existsAsync(this._downloadsFolder))) {
-      await mkdirAsync(this._downloadsFolder);
+    const fileName: string = url.split("/").pop()!;
+    const archivePath: string = join(this._downloadsFolder, fileName);
+    const outputPath: string = this._getFolderPath(revision);
+
+    if (await exists(outputPath)) {
+      return this.revisionInfo(revision);
+    }
+
+    if (!(await exists(this._downloadsFolder))) {
+      await Deno.mkdir(this._downloadsFolder, { recursive: true });
     }
 
     // Use Intel x86 builds on Apple M1 until native macOS arm64
     // Chromium builds are available.
-    if (os.platform() !== "darwin" && os.arch() === "arm64") {
-      handleArm64();
-      return;
+    if (os !== "darwin" && ["aarch64", "arm64"].includes(arch)) {
+      return handleArm64();
     }
+
     try {
       await downloadFile(url, archivePath, progressCallback);
       await install(archivePath, outputPath);
     } finally {
-      if (await existsAsync(archivePath)) await unlinkAsync(archivePath);
+      if (await exists(archivePath)) {
+        // await Deno.remove(archivePath);
+      }
     }
-    const revisionInfo = this.revisionInfo(revision);
-    if (revisionInfo) await chmodAsync(revisionInfo.executablePath, 0o755);
+    const revisionInfo: BrowserFetcherRevisionInfo = await this.revisionInfo(
+      revision,
+    );
+    if (revisionInfo) {
+      await Deno.chmod(revisionInfo.executablePath, 0o755);
+    }
     return revisionInfo;
   }
 
@@ -325,12 +353,74 @@ export class BrowserFetcher {
    * available locally on disk.
    */
   async localRevisions(): Promise<string[]> {
-    if (!(await existsAsync(this._downloadsFolder))) return [];
-    const fileNames = await readdirAsync(this._downloadsFolder);
-    return fileNames
-      .map((fileName) => parseFolderPath(this._product, fileName))
-      .filter((entry) => entry && entry.platform === this._platform)
-      .map((entry) => entry.revision);
+    if (!(await exists(this._downloadsFolder))) {
+      return [];
+    }
+
+    const dirEntries: Deno.DirEntry[] = await aiReduce(
+      Deno.readDir(this._downloadsFolder),
+      (acc: Deno.DirEntry[], x: Deno.DirEntry) => acc.concat(x),
+      [],
+    );
+
+    return dirEntries
+      .map(({ name }) => parseFolderPath(this._product, name))
+      .filter((entry) => entry?.platform === this._platform)
+      .map((entry) => entry!.revision);
+  }
+
+  async latestRevision(): Promise<string> {
+    const revision: string = this._product === "chrome"
+      ? await this.latestChromeRevision()
+      : await this.latestFirefoxRevision();
+
+    assert(
+      typeof revision === "string" && revision.length > 0,
+      `Could not find latest version of ${this._product} for ${this._platform} on ${this._downloadHost}`,
+    );
+    return revision;
+  }
+
+  private async latestChromeRevision(): Promise<string> {
+    const url = downloadURL(
+      "chrome",
+      this._platform,
+      this._downloadHost,
+      "none",
+    ).replace(/\/[^/]+\/[^/]+$/, "/LAST_CHANGE");
+    const response = await fetch(url);
+    if (!response.ok) {
+      throw new Error(
+        `Could not check latest version of chrome for ${this._platform}. Got HTTP Status ${response.status} from ${url}`,
+      );
+    }
+    return (await response.text()).trim();
+  }
+
+  private async latestFirefoxRevision(): Promise<string> {
+    const url = downloadURL(
+      "firefox",
+      this._platform,
+      this._downloadHost,
+      "none",
+    ).replace(/\/[^/]+$/, "/");
+    const response = await fetch(url, {
+      headers: { accept: "application/json" },
+    });
+    if (!response.ok) {
+      throw new Error(
+        `Could not check latest version of firefox for ${this._platform}. Got HTTP Status ${response.status} from ${url}`,
+      );
+    }
+    const body: { files: { name: string }[] } = await response.json();
+    const isName = (name: string) => firefoxName(this._platform).test(name);
+    const names = body.files.map(({ name }) => name).filter(isName);
+    const revisions = names
+      .map((name) => firefoxName(this._platform).exec(name))
+      .filter(Boolean)
+      .map((captureGroups) => captureGroups![1])
+      .filter(Boolean);
+    return revisions[0];
   }
 
   /**
@@ -343,22 +433,22 @@ export class BrowserFetcher {
   async remove(revision: string): Promise<void> {
     const folderPath = this._getFolderPath(revision);
     assert(
-      await existsAsync(folderPath),
+      await exists(folderPath),
       `Failed to remove: revision ${revision} is not downloaded`,
     );
-    await new Promise((fulfill) => removeRecursive(folderPath, fulfill));
+    await Deno.remove(folderPath, { recursive: true });
   }
 
   /**
    * @param revision - The revision to get info for.
    * @returns The revision info for the given revision.
    */
-  revisionInfo(revision: string): BrowserFetcherRevisionInfo {
+  async revisionInfo(revision: string): Promise<BrowserFetcherRevisionInfo> {
     const folderPath = this._getFolderPath(revision);
     let executablePath = "";
     if (this._product === "chrome") {
       if (this._platform === "mac") {
-        executablePath = path.join(
+        executablePath = join(
           folderPath,
           archiveName(this._product, this._platform, revision),
           "Chromium.app",
@@ -367,13 +457,13 @@ export class BrowserFetcher {
           "Chromium",
         );
       } else if (this._platform === "linux") {
-        executablePath = path.join(
+        executablePath = join(
           folderPath,
           archiveName(this._product, this._platform, revision),
           "chrome",
         );
       } else if (this._platform === "win32" || this._platform === "win64") {
-        executablePath = path.join(
+        executablePath = join(
           folderPath,
           archiveName(this._product, this._platform, revision),
           "chrome.exe",
@@ -381,7 +471,7 @@ export class BrowserFetcher {
       } else throw new Error("Unsupported platform: " + this._platform);
     } else if (this._product === "firefox") {
       if (this._platform === "mac") {
-        executablePath = path.join(
+        executablePath = join(
           folderPath,
           "Firefox Nightly.app",
           "Contents",
@@ -389,9 +479,9 @@ export class BrowserFetcher {
           "firefox",
         );
       } else if (this._platform === "linux") {
-        executablePath = path.join(folderPath, "firefox", "firefox");
+        executablePath = join(folderPath, "firefox", "firefox");
       } else if (this._platform === "win32" || this._platform === "win64") {
-        executablePath = path.join(folderPath, "firefox", "firefox.exe");
+        executablePath = join(folderPath, "firefox", "firefox.exe");
       } else throw new Error("Unsupported platform: " + this._platform);
     } else throw new Error("Unsupported product: " + this._product);
     const url = downloadURL(
@@ -400,7 +490,7 @@ export class BrowserFetcher {
       this._downloadHost,
       revision,
     );
-    const local = fs.existsSync(folderPath);
+    const local = await exists(folderPath);
     debugFetcher({
       revision,
       executablePath,
@@ -423,197 +513,234 @@ export class BrowserFetcher {
    * @internal
    */
   _getFolderPath(revision: string): string {
-    return path.join(this._downloadsFolder, `${this._platform}-${revision}`);
+    return join(this._downloadsFolder, `${this._platform}-${revision}`);
   }
 }
 
 function parseFolderPath(
   product: Product,
   folderPath: string,
-): { product: string; platform: string; revision: string } | null {
-  const name = path.basename(folderPath);
-  const splits = name.split("-");
-  if (splits.length !== 2) return null;
+): { product: string; platform: string; revision: string } | undefined {
+  const name: string = basename(folderPath);
+  const splits: [Platform, string] = name.split("-") as [Platform, string];
+  if (splits.length !== 2) {
+    return undefined;
+  }
+
   const [platform, revision] = splits;
-  if (!downloadURLs[product][platform]) return null;
+  if (!downloadURLs[product][platform]) {
+    return undefined;
+  }
+
   return { product, platform, revision };
 }
 
 /**
  * @internal
  */
-function downloadFile(
+function noop(): void {}
+
+/**
+ * @internal
+ */
+async function downloadFile(
   url: string,
   destinationPath: string,
-  progressCallback: (x: number, y: number) => void,
+  progressCallback: (downloadedBytes: number, totalBytes: number) => void,
 ): Promise<void> {
   debugFetcher(`Downloading binary from ${url}`);
-  let fulfill, reject;
-  let downloadedBytes = 0;
-  let totalBytes = 0;
 
-  const promise = new Promise<void>((x, y) => {
-    fulfill = x;
-    reject = y;
-  });
-
-  const request = httpRequest(url, "GET", (response) => {
-    if (response.statusCode !== 200) {
-      const error = new Error(
-        `Download failed: server returned code ${response.statusCode}. URL: ${url}`,
-      );
-      // consume response data to free up memory
-      response.resume();
-      reject(error);
-      return;
-    }
-    const file = fs.createWriteStream(destinationPath);
-    file.on("finish", () => fulfill());
-    file.on("error", (error) => reject(error));
-    response.pipe(file);
-    totalBytes = parseInt(
-      /** @type {string} */ response.headers["content-length"],
-      10,
+  const response = await fetch(url);
+  if (!response.ok) {
+    await response.body?.cancel("Response status not ok.");
+    throw new Error(
+      `Download failed: server returned code ${response.status}. URL: ${url}`,
     );
-    if (progressCallback) response.on("data", onData);
-  });
-  request.on("error", (error) => reject(error));
-  return promise;
+  }
+  const totalBytes: number = parseInt(
+    response.headers.get("content-length") as string,
+    10,
+  );
+  let downloadedBytes = 0;
 
-  function onData(chunk: string): void {
-    downloadedBytes += chunk.length;
+  const file = await Deno.open(destinationPath, {
+    create: true,
+    write: true,
+  });
+
+  const [streamForFile, streamForProgress]: [
+    ReadableStream<Uint8Array>,
+    ReadableStream<Uint8Array>,
+  ] = response.body!.tee();
+
+  const readerForProgress = streamForProgress.getReader();
+  while (true) {
+    const readResult: { done: false; value: Uint8Array } | { done: true } =
+      await readerForProgress.read();
+
+    if (readResult.done) {
+      break;
+    }
+
+    downloadedBytes += readResult.value.length;
     progressCallback(downloadedBytes, totalBytes);
   }
+
+  await copy(
+    readerFromStreamReader(streamForFile.getReader()),
+    file,
+  );
+  file.close();
 }
 
-function install(archivePath: string, folderPath: string): Promise<unknown> {
+async function install(
+  archivePath: string,
+  folderPath: string,
+): Promise<void> {
   debugFetcher(`Installing ${archivePath} to ${folderPath}`);
+
   if (archivePath.endsWith(".zip")) {
-    return extractZip(archivePath, { dir: folderPath });
-  } else if (archivePath.endsWith(".tar.bz2")) {
-    return extractTar(archivePath, folderPath);
-  } else if (archivePath.endsWith(".dmg")) {
-    return mkdirAsync(folderPath).then(() =>
-      installDMG(archivePath, folderPath)
+    return extractZip(archivePath, folderPath);
+  }
+
+  if (archivePath.endsWith(".tar.bz2")) {
+    return extractTarBzip2(archivePath, folderPath);
+  }
+
+  if (archivePath.endsWith(".dmg")) {
+    await Deno.mkdir(folderPath);
+    return installDMG(archivePath, folderPath);
+  }
+
+  throw new Error(`Unsupported archive format: ${archivePath}`);
+}
+
+/**
+ * @internal
+ */
+async function extractZip(zipPath: string, folderPath: string): Promise<void> {
+  try {
+    await ensureDir(folderPath);
+
+    const cwd = folderPath;
+    const cmd = Deno.build.os === "windows"
+      ? [
+        "PowerShell",
+        "Expand-Archive",
+        "-Path",
+        zipPath,
+        "-DestinationPath",
+        folderPath,
+      ]
+      : ["unzip", "-q", zipPath];
+
+    const process: Deno.Process = Deno.run({ cwd, cmd });
+    await process.status();
+  } catch (error) {
+    await Deno.remove(folderPath, { recursive: true });
+    console.error(
+      `ERROR: Could not extract ${zipPath} into ${folderPath}.`,
     );
-  } else throw new Error(`Unsupported archive format: ${archivePath}`);
+    throw error;
+  }
 }
 
 /**
  * @internal
  */
-function extractTar(tarPath: string, folderPath: string): Promise<unknown> {
-  // eslint-disable-next-line @typescript-eslint/no-var-requires
-  const tar = require("tar-fs");
-  // eslint-disable-next-line @typescript-eslint/no-var-requires
-  const bzip = require("unbzip2-stream");
-  return new Promise((fulfill, reject) => {
-    const tarStream = tar.extract(folderPath);
-    tarStream.on("error", reject);
-    tarStream.on("finish", fulfill);
-    const readStream = fs.createReadStream(tarPath);
-    readStream.pipe(bzip()).pipe(tarStream);
-  });
+async function extractTarBzip2(
+  tarBz2Path: string,
+  folderPath: string,
+): Promise<void> {
+  try {
+    await ensureDir(folderPath);
+
+    const cwd = folderPath;
+    const cmd = ["tar", "xjf", tarBz2Path];
+
+    const process: Deno.Process = Deno.run({ cwd, cmd });
+    await process.status();
+  } catch (error) {
+    await Deno.remove(folderPath, { recursive: true });
+    console.error(
+      `ERROR: Could not extract ${tarBz2Path} into ${folderPath}.`,
+    );
+    throw error;
+  }
+}
+
+async function asyncIterableToArray<T>(
+  asyncIterable: AsyncIterable<T>,
+): Promise<T[]> {
+  const result: T[] = [];
+  for await (const item of asyncIterable) {
+    result.push(item);
+  }
+  return result;
 }
 
 /**
  * @internal
  */
-function installDMG(dmgPath: string, folderPath: string): Promise<void> {
-  let mountPath;
+async function installDMG(dmgPath: string, folderPath: string): Promise<void> {
+  let mountPath: string | undefined;
 
-  function mountAndCopy(fulfill: () => void, reject: (Error) => void): void {
-    const mountCommand = `hdiutil attach -nobrowse -noautoopen "${dmgPath}"`;
-    childProcess.exec(mountCommand, (err, stdout) => {
-      if (err) return reject(err);
-      const volumes = stdout.match(/\/Volumes\/(.*)/m);
-      if (!volumes) {
-        return reject(new Error(`Could not find volume path in ${stdout}`));
-      }
-      mountPath = volumes[0];
-      readdirAsync(mountPath)
-        .then((fileNames) => {
-          const appName = fileNames.find(
-            (item) => typeof item === "string" && item.endsWith(".app"),
-          );
-          if (!appName) {
-            return reject(new Error(`Cannot find app in ${mountPath}`));
-          }
-          const copyPath = path.join(mountPath, appName);
-          debugFetcher(`Copying ${copyPath} to ${folderPath}`);
-          childProcess.exec(`cp -R "${copyPath}" "${folderPath}"`, (err) => {
-            if (err) reject(err);
-            else fulfill();
-          });
-        })
-        .catch(reject);
+  async function mountAndCopy(): Promise<void> {
+    const mountCommand: string[] = [
+      `hdiutil`,
+      `attach`,
+      `-nobrowse`,
+      `-noautoopen`,
+      dmgPath,
+    ];
+
+    const mountProcess: Deno.Process = Deno.run({
+      cmd: mountCommand,
+      stdout: "piped",
     });
+    await mountProcess.status();
+    const stdout: string = decode(await mountProcess.output())
+      .trim();
+
+    const volumes: RegExpMatchArray | null = stdout.match(/\/Volumes\/(.*)/m);
+    if (!volumes) {
+      throw new Error(`Could not find volume path in ${stdout}`);
+    }
+    mountPath = volumes[0];
+    const fileNames: Deno.DirEntry[] = await asyncIterableToArray(
+      Deno.readDir(mountPath),
+    );
+    const appName = fileNames.map((entry) => entry.name)
+      .find(
+        (name) => typeof name === "string" && name.endsWith(".app"),
+      );
+    if (!appName) {
+      throw new Error(`Cannot find app in ${mountPath}`);
+    }
+    const copyPath = join(mountPath, appName);
+    debugFetcher(`Copying ${copyPath} to ${folderPath}`);
+    await ensureDir(folderPath);
+    await Deno.copyFile(copyPath, folderPath);
   }
 
-  function unmount(): void {
-    if (!mountPath) return;
-    const unmountCommand = `hdiutil detach "${mountPath}" -quiet`;
+  async function unmount(): Promise<void> {
+    if (!mountPath) {
+      return;
+    }
+
+    const unmountCommand: string[] = [`hdiutil`, `detach`, mountPath, `-quiet`];
     debugFetcher(`Unmounting ${mountPath}`);
-    childProcess.exec(unmountCommand, (err) => {
-      if (err) console.error(`Error unmounting dmg: ${err}`);
-    });
-  }
-
-  return new Promise<void>(mountAndCopy)
-    .catch((error) => {
-      console.error(error);
-    })
-    .finally(unmount);
-}
-
-function httpRequest(
-  url: string,
-  method: string,
-  response: (x: http.IncomingMessage) => void,
-): http.ClientRequest {
-  const urlParsed = URL.parse(url);
-
-  type Options = Partial<URL.UrlWithStringQuery> & {
-    method?: string;
-    agent?: HttpsProxyAgent;
-    rejectUnauthorized?: boolean;
-  };
-
-  let options: Options = {
-    ...urlParsed,
-    method,
-  };
-
-  const proxyURL = getProxyForUrl(url);
-  if (proxyURL) {
-    if (url.startsWith("http:")) {
-      const proxy = URL.parse(proxyURL);
-      options = {
-        path: options.href,
-        host: proxy.hostname,
-        port: proxy.port,
-      };
-    } else {
-      const parsedProxyURL = URL.parse(proxyURL);
-
-      const proxyOptions = {
-        ...parsedProxyURL,
-        secureProxy: parsedProxyURL.protocol === "https:",
-      } as HttpsProxyAgentOptions;
-
-      options.agent = createHttpsProxyAgent(proxyOptions);
-      options.rejectUnauthorized = false;
+    try {
+      const process: Deno.Process = await Deno.run({ cmd: unmountCommand });
+      await process.status();
+    } catch (error) {
+      console.error(`Error unmounting dmg: ${error}`);
     }
   }
 
-  const requestCallback = (res: http.IncomingMessage): void => {
-    if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
-      httpRequest(res.headers.location, method, response);
-    } else response(res);
-  };
-  const request = options.protocol === "https:"
-    ? https.request(options, requestCallback)
-    : http.request(options, requestCallback);
-  request.end();
-  return request;
+  try {
+    await mountAndCopy();
+  } finally {
+    await unmount();
+  }
 }

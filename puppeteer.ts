@@ -79,7 +79,6 @@ function prepareChromeArgs(
     executablePath,
     // Default arguments
     "--disable-background-networking",
-    "--enable-features=NetworkService,NetworkServiceInProcess",
     "--disable-background-timer-throttling",
     "--disable-backgrounding-occluded-windows",
     "--disable-breakpad",
@@ -95,13 +94,14 @@ function prepareChromeArgs(
     "--disable-prompt-on-repost",
     "--disable-renderer-backgrounding",
     "--disable-sync",
+    "--enable-automation",
+    "--enable-blink-features=IdleDetection",
+    "--enable-features=NetworkService,NetworkServiceInProcess",
     "--force-color-profile=srgb",
     "--metrics-recording-only",
     "--no-first-run",
-    "--enable-automation",
     "--password-store=basic",
     "--use-mock-keychain",
-    "--enable-blink-features=IdleDetection",
   ];
   const {
     args = [],

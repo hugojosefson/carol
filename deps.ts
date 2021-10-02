@@ -1,28 +1,28 @@
-export { exists } from "https://deno.land/std@0.108.0/fs/exists.ts";
+export { exists } from "https://deno.land/std@0.109.0/fs/exists.ts";
 export {
   dirname,
   fromFileUrl,
   join,
   resolve,
-} from "https://deno.land/std@0.108.0/path/mod.ts";
+} from "https://deno.land/std@0.109.0/path/mod.ts";
 
-export { concat } from "https://deno.land/std@0.108.0/bytes/mod.ts";
+export { concat } from "https://deno.land/std@0.109.0/bytes/mod.ts";
 
 // TODO: Remove this import statement.
 export { decode, encode } from "https://deno.land/std@0.84.0/encoding/utf8.ts";
 export {
   decode as decodeFromBase64,
   encode as encodeToBase64,
-} from "https://deno.land/std@0.108.0/encoding/base64.ts";
+} from "https://deno.land/std@0.109.0/encoding/base64.ts";
 
-export { deferred } from "https://deno.land/std@0.108.0/async/mod.ts";
-export type { Deferred } from "https://deno.land/std@0.108.0/async/mod.ts";
+export { deferred } from "https://deno.land/std@0.109.0/async/mod.ts";
+export type { Deferred } from "https://deno.land/std@0.109.0/async/mod.ts";
 
 export {
   BufReader,
   readAll,
   writeAll,
-} from "https://deno.land/std@0.108.0/io/mod.ts";
+} from "https://deno.land/std@0.109.0/io/mod.ts";
 
 export {
   assert,
@@ -31,7 +31,7 @@ export {
   assertStringIncludes,
   assertThrowsAsync,
   fail,
-} from "https://deno.land/std@0.108.0/testing/asserts.ts";
+} from "https://deno.land/std@0.109.0/testing/asserts.ts";
 
 export { default as puppeteer } from "https://unpkg.com/puppeteer@10.4.0/lib/esm/puppeteer/web.js";
 export { EventEmitter } from "https://unpkg.com/puppeteer@10.4.0/lib/esm/puppeteer/common/EventEmitter.js";

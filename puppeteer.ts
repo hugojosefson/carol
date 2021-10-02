@@ -100,6 +100,7 @@ function prepareChromeArgs(
     "--force-color-profile=srgb",
     "--metrics-recording-only",
     "--no-first-run",
+    "--no-startup-window",
     "--password-store=basic",
     "--use-mock-keychain",
   ];

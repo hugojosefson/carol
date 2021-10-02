@@ -99,6 +99,7 @@ function prepareChromeArgs(
     "--enable-features=NetworkService,NetworkServiceInProcess",
     "--force-color-profile=srgb",
     "--metrics-recording-only",
+    "--no-default-browser-check",
     "--no-first-run",
     "--no-startup-window",
     "--password-store=basic",
